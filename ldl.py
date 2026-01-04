@@ -1214,7 +1214,6 @@ def main() -> None:
 
 
     #cacca
-    #zeno odora
 
 
     bot.run(token)
