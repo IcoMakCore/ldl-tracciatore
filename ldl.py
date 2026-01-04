@@ -867,7 +867,7 @@ async def on_voice_state_update(member: discord.Member,
 # ---------------------------------------------------------------------
 
 @bot.tree.command(name="vocale_top",
-                  description="Leaderboard totale: tempo passato in vocale (no ping).",
+                  description="Leaderboard totale: tempo passato in vocale.",
                   guild=GUILD)
 async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
     """
@@ -916,7 +916,6 @@ async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N)
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text="Include anche il tempo live corrente. Nessun ping.")
     await interaction.response.send_message(embed=embed)
 
 
@@ -964,7 +963,7 @@ async def stats(interaction: discord.Interaction, user: discord.Member | None = 
 
 
 @bot.tree.command(name="vocale_giornaliera",
-                  description="Leaderboard giornaliera: tempo in vocale di oggi (no ping).",
+                  description="Leaderboard giornaliera: tempo in vocale di oggi",
                   guild=GUILD)
 async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
     """
@@ -1010,12 +1009,12 @@ async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAUL
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"Data: {today_iso} (Europe/Rome). Nessun ping.")
+    embed.set_footer(text=f"Data: {today_iso} (Europe/Rome).")
     await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="vocale_settimanale",
-                  description="Leaderboard settimanale: ultimi 7 giorni (no ping).",
+                  description="Leaderboard settimanale: ultimi 7 giorni.",
                   guild=GUILD)
 async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
     """
@@ -1065,7 +1064,7 @@ async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAUL
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"Intervallo: {start_iso} → {end_iso} (Europe/Rome). Nessun ping.")
+    embed.set_footer(text=f"Intervallo: {start_iso} → {end_iso} (Europe/Rome).")
     await interaction.response.send_message(embed=embed)
 
 
