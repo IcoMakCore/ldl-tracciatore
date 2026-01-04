@@ -1213,9 +1213,6 @@ def main() -> None:
 
 
 
-    #cacca
-
-
     bot.run(token)
 
 
