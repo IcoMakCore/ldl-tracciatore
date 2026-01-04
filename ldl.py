@@ -1098,7 +1098,7 @@ async def vocale_torta(interaction: discord.Interaction, user: discord.Member | 
 
     embed = discord.Embed(
         title=f"Ripartizione tempo in vocale: {user.display_name}",
-        color=discord.Color.blurple(),MTQ1NjM5OTI1OTM5NzI2MzUyMw.GumPHB.H4PCUP4GUDqnTJ36xZz49gJa6JJxiYIKX5bwl8
+        color=discord.Color.blurple(),
     )
     embed.add_field(name="Attivo", value=format_duration(totals.active), inline=True)
     embed.add_field(name="Mutato", value=format_duration(totals.muted), inline=True)
