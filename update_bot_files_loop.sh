@@ -17,7 +17,7 @@ FILES=(
 	"ldl.py"
 )
 
-SLEEP_SECONDS=60
+SLEEP_SECONDS=10
 # ---------------------------------------
 
 log() {
