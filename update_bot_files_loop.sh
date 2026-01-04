@@ -15,6 +15,7 @@ BRANCH="main"
 # FILES DA AGGIORNARE (SOLO QUESTI)
 FILES=(
 	"ldl.py"
+	"update_bot_files_loop.sh"
 )
 
 SLEEP_SECONDS=10
