@@ -870,21 +870,14 @@ async def on_voice_state_update(member: discord.Member,
                   description="Leaderboard totale: tempo passato in vocale.",
                   guild=GUILD)
 async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
-    """
-    Show total voice leaderboard for this server.
+    # Diciamo a Discord di aspettare (evita l'errore 10062)
+    await interaction.response.defer()
 
-    Implementation:
-    - take persisted totals from DB
-    - add live session deltas (from last_ts to now)
-    - sort by total voice time and show top N
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     top = max(1, min(int(top), MAX_TOP_N))
-
     guild_id = interaction.guild.id
     ts = now_ts()
 
@@ -901,7 +894,7 @@ async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N)
         combined[uid].add_status(status, delta)
 
     if not combined:
-        await interaction.response.send_message("Non ho ancora dati sul tempo in vocale.")
+        await interaction.followup.send("Non ho ancora dati sul tempo in vocale.")
         return
 
     ranking = sorted(combined.items(), key=lambda kv: kv[1].total, reverse=True)[:top]
@@ -916,24 +909,18 @@ async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N)
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    await interaction.response.send_message(embed=embed)
+    # Dopo il defer si usa followup.send
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="stats",
                   description="Statistiche utente (totale/mutato/defenato/screenshare).",
                   guild=GUILD)
 async def stats(interaction: discord.Interaction, user: discord.Member | None = None):
-    """
-    Show detailed stats for a user:
-    - total voice time
-    - active/muted/deaf breakdown
-    - screen share time
+    await interaction.response.defer()
 
-    Includes live time for currently active session.
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     user = user or interaction.user
@@ -959,30 +946,22 @@ async def stats(interaction: discord.Interaction, user: discord.Member | None = 
     embed.add_field(name="Defenato", value=format_duration(totals.deaf), inline=True)
     embed.add_field(name="Screen share", value=format_duration(totals.stream), inline=True)
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="vocale_giornaliera",
                   description="Leaderboard giornaliera: tempo in vocale di oggi",
                   guild=GUILD)
 async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
-    """
-    Show today's voice leaderboard for the server.
+    await interaction.response.defer()
 
-    Implementation:
-    - read today's bucket from voice_daily
-    - add live time for currently connected members, clipped to today's day
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     top = max(1, min(int(top), MAX_TOP_N))
-
     guild_id = interaction.guild.id
     ts = now_ts()
-
     today_iso = datetime.fromtimestamp(ts, TZ).date().isoformat()
 
     base = await db.get_leaderboard_range(guild_id, today_iso, today_iso)
@@ -994,11 +973,10 @@ async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAUL
                 base[uid] = base.get(uid, 0) + secs
 
     if not base:
-        await interaction.response.send_message("Nessun dato per oggi (ancora).")
+        await interaction.followup.send("Nessun dato per oggi (ancora).")
         return
 
     ranking = sorted(base.items(), key=lambda kv: kv[1], reverse=True)[:top]
-
     lines: list[str] = []
     for i, (uid, sec) in enumerate(ranking, start=1):
         name = await resolve_name(interaction, uid)
@@ -1010,33 +988,25 @@ async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAUL
         color=discord.Color.blurple(),
     )
     embed.set_footer(text=f"Data: {today_iso} (Europe/Rome).")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="vocale_settimanale",
                   description="Leaderboard settimanale: ultimi 7 giorni.",
                   guild=GUILD)
 async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
-    """
-    Show last-7-days voice leaderboard for the server.
+    await interaction.response.defer()
 
-    Implementation:
-    - read the range from voice_daily
-    - add live time for current sessions, split per-day and included only if in range
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     top = max(1, min(int(top), MAX_TOP_N))
-
     guild_id = interaction.guild.id
     ts = now_ts()
 
     end_day = datetime.fromtimestamp(ts, TZ).date()
     start_day = end_day - timedelta(days=6)
-
     start_iso = start_day.isoformat()
     end_iso = end_day.isoformat()
 
@@ -1049,11 +1019,10 @@ async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAUL
                 base[uid] = base.get(uid, 0) + secs
 
     if not base:
-        await interaction.response.send_message("Nessun dato per questa settimana (ancora).")
+        await interaction.followup.send("Nessun dato per questa settimana (ancora).")
         return
 
     ranking = sorted(base.items(), key=lambda kv: kv[1], reverse=True)[:top]
-
     lines: list[str] = []
     for i, (uid, sec) in enumerate(ranking, start=1):
         name = await resolve_name(interaction, uid)
@@ -1065,21 +1034,17 @@ async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAUL
         color=discord.Color.blurple(),
     )
     embed.set_footer(text=f"Intervallo: {start_iso} → {end_iso} (Europe/Rome).")
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="vocale_torta",
                   description="Grafico a torta: attivo / mutato / defenato per un utente.",
                   guild=GUILD)
 async def vocale_torta(interaction: discord.Interaction, user: discord.Member | None = None):
-    """
-    Send a pie chart breakdown (active/muted/deaf) for a user.
+    await interaction.response.defer()
 
-    Includes live time from current session (status bucket only).
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     user = user or interaction.user
@@ -1105,7 +1070,7 @@ async def vocale_torta(interaction: discord.Interaction, user: discord.Member | 
     embed.add_field(name="Defenato", value=format_duration(totals.deaf), inline=True)
     embed.set_image(url="attachment://vocale_torta.png")
 
-    await interaction.response.send_message(embed=embed, file=file)
+    await interaction.followup.send(embed=embed, file=file)
 
 
 @bot.tree.command(name="vocale_linea",
@@ -1115,40 +1080,26 @@ async def vocale_linea(interaction: discord.Interaction,
                        user: discord.Member | None = None,
                        days: int = DEFAULT_DAYS,
                        mode: str = "totale"):
-    """
-    Send a line chart for a user's usage over N days.
+    await interaction.response.defer()
 
-    mode:
-        - totale
-        - attivo
-        - mutato
-        - defenato
-
-    Includes live time (current session) distributed across day boundaries.
-    """
     if interaction.guild is None:
-        await interaction.response.send_message("Questo comando funziona solo in un server.",
-                                                ephemeral=True)
+        await interaction.followup.send("Questo comando funziona solo in un server.", ephemeral=True)
         return
 
     user = user or interaction.user
     days = max(1, min(int(days), MAX_DAYS))
-
     mode = (mode or "totale").strip().lower()
+
     if mode not in ("totale", "attivo", "mutato", "defenato"):
-        await interaction.response.send_message("mode deve essere: totale, attivo, mutato, defenato",
-                                                ephemeral=True)
+        await interaction.followup.send("mode deve essere: totale, attivo, mutato, defenato", ephemeral=True)
         return
 
     guild_id = interaction.guild.id
     ts = now_ts()
-
     end_day = datetime.fromtimestamp(ts, TZ).date()
     start_day = end_day - timedelta(days=days - 1)
 
-    daily = await db.get_user_daily(guild_id, user.id,
-                                    start_day.isoformat(),
-                                    end_day.isoformat())
+    daily = await db.get_user_daily(guild_id, user.id, start_day.isoformat(), end_day.isoformat())
 
     sessions = await db.get_sessions(guild_id)
     if user.id in sessions:
@@ -1161,32 +1112,24 @@ async def vocale_linea(interaction: discord.Interaction,
 
     labels: list[str] = []
     values_hours: list[float] = []
-
     cur = start_day
     while cur <= end_day:
         day_iso = cur.isoformat()
         t = daily.get(day_iso, UserTotals())
-
         if mode == "totale":
-            secs = t.total
-            title_mode = "Totale"
+            secs, title_mode = t.total, "Totale"
         elif mode == "attivo":
-            secs = t.active
-            title_mode = "Attivo"
+            secs, title_mode = t.active, "Attivo"
         elif mode == "mutato":
-            secs = t.muted
-            title_mode = "Mutato"
+            secs, title_mode = t.muted, "Mutato"
         else:
-            secs = t.deaf
-            title_mode = "Defenato"
+            secs, title_mode = t.deaf, "Defenato"
 
         labels.append(day_iso[5:])  # "MM-DD"
         values_hours.append(secs / 3600.0)
         cur += timedelta(days=1)
 
-    buf = make_line_image(labels, values_hours,
-                          f"{title_mode} per giorno: {user.display_name} ({days} giorni)")
-
+    buf = make_line_image(labels, values_hours, f"{title_mode} per giorno: {user.display_name} ({days} giorni)")
     file = discord.File(fp=buf, filename="vocale_linea.png")
 
     embed = discord.Embed(
@@ -1196,7 +1139,7 @@ async def vocale_linea(interaction: discord.Interaction,
     )
     embed.set_image(url="attachment://vocale_linea.png")
 
-    await interaction.response.send_message(embed=embed, file=file)
+    await interaction.followup.send(embed=embed, file=file)
 
 
 def main() -> None:
