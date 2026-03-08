@@ -46,19 +46,8 @@ TZ = ZoneInfo("Europe/Rome")
 GUILD_ID = 1227724065184415774
 GUILD = discord.Object(id=GUILD_ID)
 
-# ID del canale "trigger" di PartyBeast: chi entra qui ottiene una vocale creata automaticamente.
 PARTYBEAST_TRIGGER_CHANNEL_ID = 1227999030710243419
-
-# ID del canale di testo dove mandare i log di creazione/eliminazione vocale.
 LOG_CHANNEL_ID = 1480269267592151182
-
-# Dizionario in memoria: nome_canale_creato -> discord.Member
-# Viene popolato quando un utente entra nel trigger, e usato quando PartyBeast crea il canale.
-_pending_creator: dict[str, discord.Member] = {}
-
-# Dizionario in memoria: channel_id -> datetime di creazione
-# Usato per calcolare la durata quando il canale viene eliminato.
-_channel_created_at: dict[int, datetime] = {}
 
 
 def now_ts() -> int:
@@ -761,8 +750,8 @@ async def resolve_name(interaction: discord.Interaction, user_id: int) -> str:
 
 intents = discord.Intents.default()
 intents.voice_states = True
-intents.guilds = True      # necessario per on_guild_channel_create/delete
-intents.members = True     # necessario per scorrere la lista membri e fare @mention
+intents.guilds = True
+intents.members = True
 
 db = VoiceTrackerDB(DB_PATH)
 
@@ -883,11 +872,16 @@ async def on_voice_state_update(member: discord.Member,
         return
 
 
+# Dizionario: nome canale -> Member (chi è entrato nel trigger)
+_pending_creator: dict[str, discord.Member] = {}
+
+# Dizionario: channel_id -> datetime creazione (per calcolare durata)
+_channel_created_at: dict[int, datetime] = {}
+
+
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
-    """
-    Invia un embed verde quando PartyBeast crea una vocale per un utente.
-    """
+    """Invia embed verde quando PartyBeast crea una vocale."""
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
@@ -900,31 +894,32 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         except Exception:
             return
 
-    # Ricava il nome utente dal nome del canale togliendo " vc" finale.
-    username_from_channel = channel.name[:-3].strip()  # rimuove " vc" (spazio + vc)
+    # Recupera il membro dal dizionario (entrato nel trigger).
+    creator: discord.Member | None = _pending_creator.pop(channel.name, None)
 
-    # Prima controlla nel _pending_creator (più affidabile).
-    creator = _pending_creator.pop(channel.name, None)
-
-    # Se non trovato, cerca per display_name nel server scorrendo i membri.
+    # Fallback: cerca per display_name tra i membri del server.
     if creator is None:
+        username_guess = channel.name[:-3].strip()
         for m in channel.guild.members:
-            if m.display_name.lower() == username_from_channel.lower():
+            if m.display_name.lower() == username_guess.lower():
                 creator = m
                 break
 
-    if creator is not None:
-        creator_value = creator.mention
-    else:
-        creator_value = username_from_channel
+    # Fallback finale: prende il primo membro non-bot già dentro il canale.
+    if creator is None:
+        for m in channel.members:
+            if not m.bot:
+                creator = m
+                break
+
+    creator_value = creator.mention if creator is not None else channel.name[:-3].strip()
 
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
-
-    # Salva l'orario di creazione per calcolare la durata all'eliminazione.
     _channel_created_at[channel.id] = now
 
     embed = discord.Embed(
+        title="🔊 Nuova stanza vocale creata",
         color=discord.Color.green(),
         timestamp=now,
     )
@@ -940,10 +935,7 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    """
-    Invia un embed rosso quando una vocale creata da PartyBeast viene eliminata.
-    Mostra anche la durata complessiva della stanza.
-    """
+    """Invia embed rosso quando una vocale di PartyBeast viene eliminata."""
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
@@ -959,7 +951,6 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
 
-    # Calcola durata se abbiamo salvato l'orario di creazione.
     created_at = _channel_created_at.pop(channel.id, None)
     if created_at is not None:
         delta_seconds = int((now - created_at).total_seconds())
