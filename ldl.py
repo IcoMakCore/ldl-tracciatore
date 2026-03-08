@@ -16,6 +16,7 @@
 import os
 import io
 import time
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
@@ -815,7 +816,6 @@ class VoiceBot(commands.Bot):
         print(f"[OK] Guild synced: {len(synced)} -> {[c.name for c in synced]}")
 
 
-
 # replace the bot instance with our custom one
 bot = VoiceBot(command_prefix="!", intents=intents)
 
@@ -852,7 +852,7 @@ async def on_voice_state_update(member: discord.Member,
     after_ch = after.channel
 
     if before_ch is None and after_ch is not None:
-        # Salva il membro come creatore se sta entrando nel canale trigger di PartyBeast.
+        # Salva il membro come possibile creatore se entra nel canale trigger.
         if after_ch.id == PARTYBEAST_TRIGGER_CHANNEL_ID:
             expected_name = f"{member.display_name} vc"
             _pending_creator[expected_name] = member
@@ -867,6 +867,11 @@ async def on_voice_state_update(member: discord.Member,
         return
 
     if before_ch is not None and after_ch is not None:
+        # Se entra nel trigger tramite move, salvalo comunque.
+        if after_ch.id == PARTYBEAST_TRIGGER_CHANNEL_ID and before_ch.id != PARTYBEAST_TRIGGER_CHANNEL_ID:
+            expected_name = f"{member.display_name} vc"
+            _pending_creator[expected_name] = member
+
         await db.update_status_if_needed(guild_id, user_id, ts, voice_status(after))
         await db.update_stream_if_needed(guild_id, user_id, ts, is_streaming(after))
         return
@@ -877,6 +882,69 @@ _pending_creator: dict[str, discord.Member] = {}
 
 # Dizionario: channel_id -> datetime creazione (per calcolare durata)
 _channel_created_at: dict[int, datetime] = {}
+
+
+def pop_pending_creator_for_channel_name(channel_name: str) -> discord.Member | None:
+    """
+    Cerca il creator salvato usando il nome del canale PartyBeast.
+
+    Prima prova match esatto, poi case-insensitive.
+    """
+    creator = _pending_creator.pop(channel_name, None)
+    if creator is not None:
+        return creator
+
+    target = channel_name.strip().casefold()
+    for key in list(_pending_creator.keys()):
+        if key.strip().casefold() == target:
+            return _pending_creator.pop(key)
+
+    return None
+
+
+async def wait_for_first_human_in_channel(channel: discord.VoiceChannel,
+                                          attempts: int = 12,
+                                          delay: float = 0.5) -> discord.Member | None:
+    """
+    Aspetta un attimo la prima persona reale che entra nella vocale appena creata.
+
+    Utile perché on_guild_channel_create può arrivare prima che il membro
+    compaia in channel.members.
+    """
+    for _ in range(attempts):
+        fresh = channel.guild.get_channel(channel.id)
+        if isinstance(fresh, discord.VoiceChannel):
+            for member in fresh.members:
+                if not member.bot:
+                    return member
+        await asyncio.sleep(delay)
+
+    return None
+
+
+async def resolve_partybeast_creator(channel: discord.VoiceChannel) -> discord.Member | None:
+    """
+    Prova a capire chi ha creato la stanza vocale PartyBeast.
+
+    Ordine:
+    1) utente salvato quando entra nel trigger
+    2) prima persona non-bot che entra nella nuova vocale
+    3) fallback sul display_name ricavato dal nome canale
+    """
+    creator = pop_pending_creator_for_channel_name(channel.name)
+    if creator is not None:
+        return creator
+
+    creator = await wait_for_first_human_in_channel(channel)
+    if creator is not None:
+        return creator
+
+    username_guess = channel.name[:-3].strip()
+    for member in channel.guild.members:
+        if member.display_name.strip().casefold() == username_guess.casefold():
+            return member
+
+    return None
 
 
 @bot.event
@@ -894,24 +962,7 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         except Exception:
             return
 
-    # Recupera il membro dal dizionario (entrato nel trigger).
-    creator: discord.Member | None = _pending_creator.pop(channel.name, None)
-
-    # Fallback: cerca per display_name tra i membri del server.
-    if creator is None:
-        username_guess = channel.name[:-3].strip()
-        for m in channel.guild.members:
-            if m.display_name.lower() == username_guess.lower():
-                creator = m
-                break
-
-    # Fallback finale: prende il primo membro non-bot già dentro il canale.
-    if creator is None:
-        for m in channel.members:
-            if not m.bot:
-                creator = m
-                break
-
+    creator = await resolve_partybeast_creator(channel)
     creator_value = creator.mention if creator is not None else channel.name[:-3].strip()
 
     now = datetime.now(TZ)
@@ -1020,7 +1071,6 @@ async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N)
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    # Dopo il defer si usa followup.send
     await interaction.followup.send(embed=embed)
 
 
@@ -1264,8 +1314,6 @@ def main() -> None:
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise RuntimeError("Missing DISCORD_TOKEN env var")
-
-    #salame
 
     bot.run(token)
 
