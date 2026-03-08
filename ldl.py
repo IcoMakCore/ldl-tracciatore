@@ -56,6 +56,10 @@ LOG_CHANNEL_ID = 1480269267592151182
 # Viene popolato quando un utente entra nel trigger, e usato quando PartyBeast crea il canale.
 _pending_creator: dict[str, discord.Member] = {}
 
+# Dizionario in memoria: channel_id -> datetime di creazione
+# Usato per calcolare la durata quando il canale viene eliminato.
+_channel_created_at: dict[int, datetime] = {}
+
 
 def now_ts() -> int:
     """Return current unix timestamp (seconds)."""
@@ -882,13 +886,7 @@ async def on_voice_state_update(member: discord.Member,
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     """
     Invia un embed verde quando PartyBeast crea una vocale per un utente.
-
-    Il canale viene riconosciuto perché:
-    - è di tipo vocale
-    - il nome finisce con ' vc'
-    - c'è un utente in _pending_creator che corrisponde al nome del canale
     """
-    # Interessa solo canali vocali il cui nome finisce con ' vc'.
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
@@ -901,27 +899,34 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         except Exception:
             return
 
-    # Recupera il membro che ha scatenato la creazione (entrato nel trigger).
+    # Ricava il nome utente dal nome del canale togliendo ' vc' finale.
+    username_from_channel = channel.name[:-3]  # rimuove ' vc'
+
+    # Prima controlla nel _pending_creator (più affidabile).
     creator = _pending_creator.pop(channel.name, None)
+
+    # Se non trovato, cerca per display_name nel server.
     if creator is None:
-        creator_display = "Sconosciuto"
-        creator_mention = ""
+        creator = channel.guild.get_member_named(username_from_channel)
+
+    if creator is not None:
+        creator_value = creator.mention
     else:
-        creator_display = creator.display_name
-        creator_mention = creator.mention
+        creator_value = username_from_channel  # fallback: testo del nome
 
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
 
+    # Salva l'orario di creazione per calcolare la durata all'eliminazione.
+    _channel_created_at[channel.id] = now
+
     embed = discord.Embed(
-        title="🔊 Nuova stanza vocale creata",
         color=discord.Color.green(),
         timestamp=now,
     )
     embed.add_field(name="Nome stanza", value=channel.name, inline=True)
-    embed.add_field(name="Creato da", value=creator_mention or creator_display, inline=True)
+    embed.add_field(name="Creato da", value=creator_value, inline=True)
     embed.add_field(name="Orario", value=orario, inline=False)
-    embed.set_footer(text=f"ID canale: {channel.id}")
 
     try:
         await log_channel.send(embed=embed)
@@ -933,18 +938,13 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     """
     Invia un embed rosso quando una vocale creata da PartyBeast viene eliminata.
-
-    Il canale viene riconosciuto perché:
-    - è di tipo vocale
-    - il nome finisce con ' vc'
+    Mostra anche la durata complessiva della stanza.
     """
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
         return
 
-    # Recupera il log channel dal bot (non da channel.guild, che potrebbe non trovarlo
-    # perché il canale eliminato non è più nella cache).
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     if log_channel is None:
         try:
@@ -955,14 +955,22 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
 
+    # Calcola durata se abbiamo salvato l'orario di creazione.
+    created_at = _channel_created_at.pop(channel.id, None)
+    if created_at is not None:
+        delta_seconds = int((now - created_at).total_seconds())
+        durata = format_duration(delta_seconds)
+    else:
+        durata = "Sconosciuta"
+
     embed = discord.Embed(
         title="🔇 Stanza vocale eliminata",
         color=discord.Color.red(),
         timestamp=now,
     )
     embed.add_field(name="Nome stanza", value=channel.name, inline=True)
+    embed.add_field(name="Durata", value=durata, inline=True)
     embed.add_field(name="Orario eliminazione", value=orario, inline=False)
-    embed.set_footer(text=f"ID canale: {channel.id}")
 
     try:
         await log_channel.send(embed=embed)
