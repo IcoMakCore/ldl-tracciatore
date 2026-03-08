@@ -46,9 +46,15 @@ TZ = ZoneInfo("Europe/Rome")
 GUILD_ID = 1227724065184415774
 GUILD = discord.Object(id=GUILD_ID)
 
-# Canale dove inviare i log di creazione/eliminazione canali.
-# Metti qui l'ID del canale di log del tuo server.
-LOG_CHANNEL_ID = 1480269267592151182  # <-- CAMBIA CON IL TUO CHANNEL ID
+# ID del canale "trigger" di PartyBeast: chi entra qui ottiene una vocale creata automaticamente.
+PARTYBEAST_TRIGGER_CHANNEL_ID = 1227999030710243419
+
+# ID del canale di testo dove mandare i log di creazione/eliminazione vocale.
+LOG_CHANNEL_ID = 1480269267592151182
+
+# Dizionario in memoria: nome_canale_creato -> discord.Member
+# Viene popolato quando un utente entra nel trigger, e usato quando PartyBeast crea il canale.
+_pending_creator: dict[str, discord.Member] = {}
 
 
 def now_ts() -> int:
@@ -852,6 +858,11 @@ async def on_voice_state_update(member: discord.Member,
     after_ch = after.channel
 
     if before_ch is None and after_ch is not None:
+        # Salva il membro come creatore se sta entrando nel canale trigger di PartyBeast.
+        if after_ch.id == PARTYBEAST_TRIGGER_CHANNEL_ID:
+            expected_name = f"{member.display_name} vc"
+            _pending_creator[expected_name] = member
+
         await db.start_session(guild_id, user_id, ts,
                                voice_status(after),
                                is_streaming(after))
@@ -870,49 +881,42 @@ async def on_voice_state_update(member: discord.Member,
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     """
-    Invia un embed nel canale di log quando viene creato un canale.
+    Invia un embed verde quando PartyBeast crea una vocale per un utente.
 
-    Cerca il responsabile tramite l'audit log del server.
-    Se non trovato (permessi mancanti), mostra 'Sconosciuto'.
+    Il canale viene riconosciuto perché:
+    - è di tipo vocale
+    - il nome finisce con ' vc'
+    - c'è un utente in _pending_creator che corrisponde al nome del canale
     """
+    # Interessa solo canali vocali il cui nome finisce con ' vc'.
+    if not isinstance(channel, discord.VoiceChannel):
+        return
+    if not channel.name.endswith(" vc"):
+        return
+
     log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
     if log_channel is None:
         return
 
-    # Recupera chi ha creato il canale dall'audit log.
-    creator_name = "Sconosciuto"
-    try:
-        async for entry in channel.guild.audit_logs(
-            limit=5,
-            action=discord.AuditLogAction.channel_create
-        ):
-            if entry.target and entry.target.id == channel.id:
-                creator_name = str(entry.user)
-                break
-    except discord.Forbidden:
-        pass
+    # Recupera il membro che ha scatenato la creazione (entrato nel trigger).
+    creator = _pending_creator.pop(channel.name, None)
+    if creator is None:
+        creator_display = "Sconosciuto"
+        creator_mention = ""
+    else:
+        creator_display = creator.display_name
+        creator_mention = creator.mention
 
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
 
-    tipo_map = {
-        discord.ChannelType.text: "💬 Testo",
-        discord.ChannelType.voice: "🔊 Vocale",
-        discord.ChannelType.category: "📁 Categoria",
-        discord.ChannelType.stage_voice: "🎤 Stage",
-        discord.ChannelType.forum: "📋 Forum",
-        discord.ChannelType.news: "📢 Annunci",
-    }
-    tipo = tipo_map.get(channel.type, str(channel.type))
-
     embed = discord.Embed(
-        title="✅ Canale Creato",
+        title="🔊 Nuova stanza vocale creata",
         color=discord.Color.green(),
         timestamp=now,
     )
-    embed.add_field(name="Nome canale", value=channel.name, inline=True)
-    embed.add_field(name="Tipo", value=tipo, inline=True)
-    embed.add_field(name="Creato da", value=creator_name, inline=True)
+    embed.add_field(name="Nome stanza", value=channel.name, inline=True)
+    embed.add_field(name="Creato da", value=creator_mention or creator_display, inline=True)
     embed.add_field(name="Orario", value=orario, inline=False)
     embed.set_footer(text=f"ID canale: {channel.id}")
 
@@ -922,50 +926,31 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     """
-    Invia un embed nel canale di log quando viene eliminato un canale.
+    Invia un embed rosso quando una vocale creata da PartyBeast viene eliminata.
 
-    Cerca il responsabile tramite l'audit log del server.
-    Se non trovato (permessi mancanti), mostra 'Sconosciuto'.
+    Il canale viene riconosciuto perché:
+    - è di tipo vocale
+    - il nome finisce con ' vc'
     """
+    if not isinstance(channel, discord.VoiceChannel):
+        return
+    if not channel.name.endswith(" vc"):
+        return
+
     log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
     if log_channel is None:
         return
 
-    # Recupera chi ha eliminato il canale dall'audit log.
-    deleter_name = "Sconosciuto"
-    try:
-        async for entry in channel.guild.audit_logs(
-            limit=5,
-            action=discord.AuditLogAction.channel_delete
-        ):
-            if entry.target and entry.target.id == channel.id:
-                deleter_name = str(entry.user)
-                break
-    except discord.Forbidden:
-        pass
-
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
 
-    tipo_map = {
-        discord.ChannelType.text: "💬 Testo",
-        discord.ChannelType.voice: "🔊 Vocale",
-        discord.ChannelType.category: "📁 Categoria",
-        discord.ChannelType.stage_voice: "🎤 Stage",
-        discord.ChannelType.forum: "📋 Forum",
-        discord.ChannelType.news: "📢 Annunci",
-    }
-    tipo = tipo_map.get(channel.type, str(channel.type))
-
     embed = discord.Embed(
-        title="❌ Canale Eliminato",
+        title="🔇 Stanza vocale eliminata",
         color=discord.Color.red(),
         timestamp=now,
     )
-    embed.add_field(name="Nome canale", value=channel.name, inline=True)
-    embed.add_field(name="Tipo", value=tipo, inline=True)
-    embed.add_field(name="Eliminato da", value=deleter_name, inline=True)
-    embed.add_field(name="Orario", value=orario, inline=False)
+    embed.add_field(name="Nome stanza", value=channel.name, inline=True)
+    embed.add_field(name="Orario eliminazione", value=orario, inline=False)
     embed.set_footer(text=f"ID canale: {channel.id}")
 
     await log_channel.send(embed=embed)
