@@ -894,9 +894,12 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     if not channel.name.endswith(" vc"):
         return
 
-    log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
     if log_channel is None:
-        return
+        try:
+            log_channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+        except Exception:
+            return
 
     # Recupera il membro che ha scatenato la creazione (entrato nel trigger).
     creator = _pending_creator.pop(channel.name, None)
@@ -920,7 +923,10 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     embed.add_field(name="Orario", value=orario, inline=False)
     embed.set_footer(text=f"ID canale: {channel.id}")
 
-    await log_channel.send(embed=embed)
+    try:
+        await log_channel.send(embed=embed)
+    except discord.Forbidden:
+        print(f"[ERRORE] Permessi mancanti per scrivere in LOG_CHANNEL_ID={LOG_CHANNEL_ID}")
 
 
 @bot.event
@@ -937,9 +943,14 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     if not channel.name.endswith(" vc"):
         return
 
-    log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
+    # Recupera il log channel dal bot (non da channel.guild, che potrebbe non trovarlo
+    # perché il canale eliminato non è più nella cache).
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
     if log_channel is None:
-        return
+        try:
+            log_channel = await bot.fetch_channel(LOG_CHANNEL_ID)
+        except Exception:
+            return
 
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
@@ -953,7 +964,10 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     embed.add_field(name="Orario eliminazione", value=orario, inline=False)
     embed.set_footer(text=f"ID canale: {channel.id}")
 
-    await log_channel.send(embed=embed)
+    try:
+        await log_channel.send(embed=embed)
+    except discord.Forbidden:
+        print(f"[ERRORE] Permessi mancanti per scrivere in LOG_CHANNEL_ID={LOG_CHANNEL_ID}")
 
 
 # ---------------------------------------------------------------------
