@@ -48,7 +48,7 @@ GUILD = discord.Object(id=GUILD_ID)
 
 # Canale dove inviare i log di creazione/eliminazione canali.
 # Metti qui l'ID del canale di log del tuo server.
-LOG_CHANNEL_ID = 123456789012345678  # <-- CAMBIA CON IL TUO CHANNEL ID
+LOG_CHANNEL_ID = 1480269267592151182  # <-- CAMBIA CON IL TUO CHANNEL ID
 
 
 def now_ts() -> int:
