@@ -46,6 +46,10 @@ TZ = ZoneInfo("Europe/Rome")
 GUILD_ID = 1227724065184415774
 GUILD = discord.Object(id=GUILD_ID)
 
+# Canale dove inviare i log di creazione/eliminazione canali.
+# Metti qui l'ID del canale di log del tuo server.
+LOG_CHANNEL_ID = 123456789012345678  # <-- CAMBIA CON IL TUO CHANNEL ID
+
 
 def now_ts() -> int:
     """Return current unix timestamp (seconds)."""
@@ -747,6 +751,7 @@ async def resolve_name(interaction: discord.Interaction, user_id: int) -> str:
 
 intents = discord.Intents.default()
 intents.voice_states = True
+intents.guilds = True  # necessario per on_guild_channel_create/delete
 
 db = VoiceTrackerDB(DB_PATH)
 
@@ -860,6 +865,110 @@ async def on_voice_state_update(member: discord.Member,
         await db.update_status_if_needed(guild_id, user_id, ts, voice_status(after))
         await db.update_stream_if_needed(guild_id, user_id, ts, is_streaming(after))
         return
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    """
+    Invia un embed nel canale di log quando viene creato un canale.
+
+    Cerca il responsabile tramite l'audit log del server.
+    Se non trovato (permessi mancanti), mostra 'Sconosciuto'.
+    """
+    log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    # Recupera chi ha creato il canale dall'audit log.
+    creator_name = "Sconosciuto"
+    try:
+        async for entry in channel.guild.audit_logs(
+            limit=5,
+            action=discord.AuditLogAction.channel_create
+        ):
+            if entry.target and entry.target.id == channel.id:
+                creator_name = str(entry.user)
+                break
+    except discord.Forbidden:
+        pass
+
+    now = datetime.now(TZ)
+    orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
+
+    tipo_map = {
+        discord.ChannelType.text: "💬 Testo",
+        discord.ChannelType.voice: "🔊 Vocale",
+        discord.ChannelType.category: "📁 Categoria",
+        discord.ChannelType.stage_voice: "🎤 Stage",
+        discord.ChannelType.forum: "📋 Forum",
+        discord.ChannelType.news: "📢 Annunci",
+    }
+    tipo = tipo_map.get(channel.type, str(channel.type))
+
+    embed = discord.Embed(
+        title="✅ Canale Creato",
+        color=discord.Color.green(),
+        timestamp=now,
+    )
+    embed.add_field(name="Nome canale", value=channel.name, inline=True)
+    embed.add_field(name="Tipo", value=tipo, inline=True)
+    embed.add_field(name="Creato da", value=creator_name, inline=True)
+    embed.add_field(name="Orario", value=orario, inline=False)
+    embed.set_footer(text=f"ID canale: {channel.id}")
+
+    await log_channel.send(embed=embed)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    """
+    Invia un embed nel canale di log quando viene eliminato un canale.
+
+    Cerca il responsabile tramite l'audit log del server.
+    Se non trovato (permessi mancanti), mostra 'Sconosciuto'.
+    """
+    log_channel = channel.guild.get_channel(LOG_CHANNEL_ID)
+    if log_channel is None:
+        return
+
+    # Recupera chi ha eliminato il canale dall'audit log.
+    deleter_name = "Sconosciuto"
+    try:
+        async for entry in channel.guild.audit_logs(
+            limit=5,
+            action=discord.AuditLogAction.channel_delete
+        ):
+            if entry.target and entry.target.id == channel.id:
+                deleter_name = str(entry.user)
+                break
+    except discord.Forbidden:
+        pass
+
+    now = datetime.now(TZ)
+    orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
+
+    tipo_map = {
+        discord.ChannelType.text: "💬 Testo",
+        discord.ChannelType.voice: "🔊 Vocale",
+        discord.ChannelType.category: "📁 Categoria",
+        discord.ChannelType.stage_voice: "🎤 Stage",
+        discord.ChannelType.forum: "📋 Forum",
+        discord.ChannelType.news: "📢 Annunci",
+    }
+    tipo = tipo_map.get(channel.type, str(channel.type))
+
+    embed = discord.Embed(
+        title="❌ Canale Eliminato",
+        color=discord.Color.red(),
+        timestamp=now,
+    )
+    embed.add_field(name="Nome canale", value=channel.name, inline=True)
+    embed.add_field(name="Tipo", value=tipo, inline=True)
+    embed.add_field(name="Eliminato da", value=deleter_name, inline=True)
+    embed.add_field(name="Orario", value=orario, inline=False)
+    embed.set_footer(text=f"ID canale: {channel.id}")
+
+    await log_channel.send(embed=embed)
 
 
 # ---------------------------------------------------------------------
