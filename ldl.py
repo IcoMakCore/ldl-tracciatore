@@ -761,7 +761,8 @@ async def resolve_name(interaction: discord.Interaction, user_id: int) -> str:
 
 intents = discord.Intents.default()
 intents.voice_states = True
-intents.guilds = True  # necessario per on_guild_channel_create/delete
+intents.guilds = True      # necessario per on_guild_channel_create/delete
+intents.members = True     # necessario per scorrere la lista membri e fare @mention
 
 db = VoiceTrackerDB(DB_PATH)
 
@@ -899,20 +900,23 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         except Exception:
             return
 
-    # Ricava il nome utente dal nome del canale togliendo ' vc' finale.
-    username_from_channel = channel.name[:-3]  # rimuove ' vc'
+    # Ricava il nome utente dal nome del canale togliendo " vc" finale.
+    username_from_channel = channel.name[:-3].strip()  # rimuove " vc" (spazio + vc)
 
     # Prima controlla nel _pending_creator (più affidabile).
     creator = _pending_creator.pop(channel.name, None)
 
-    # Se non trovato, cerca per display_name nel server.
+    # Se non trovato, cerca per display_name nel server scorrendo i membri.
     if creator is None:
-        creator = channel.guild.get_member_named(username_from_channel)
+        for m in channel.guild.members:
+            if m.display_name.lower() == username_from_channel.lower():
+                creator = m
+                break
 
     if creator is not None:
         creator_value = creator.mention
     else:
-        creator_value = username_from_channel  # fallback: testo del nome
+        creator_value = username_from_channel
 
     now = datetime.now(TZ)
     orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
