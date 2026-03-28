@@ -749,12 +749,85 @@ async def resolve_name(interaction: discord.Interaction, user_id: int) -> str:
         return f"User {user_id}"
 
 
+async def resolve_member_name_in_guild(guild: discord.Guild, user_id: int) -> str:
+    """
+    Resolve a user id to a display name given a guild object directly.
+
+    Used outside of slash command contexts (e.g. channel delete events).
+    """
+    m = guild.get_member(user_id)
+    if m:
+        return m.display_name
+
+    try:
+        m = await guild.fetch_member(user_id)
+        return m.display_name
+    except Exception:
+        return f"User {user_id}"
+
+
 intents = discord.Intents.default()
 intents.voice_states = True
 intents.guilds = True
 intents.members = True
 
 db = VoiceTrackerDB(DB_PATH)
+
+# ---------------------------------------------------------------------
+# Per-channel member tracking for PartyBeast voice rooms.
+#
+# Structure:
+#   _channel_members[channel_id][user_id] = (last_join_ts, accumulated_seconds)
+#
+# - last_join_ts > 0  -> user is currently inside the channel
+# - last_join_ts == 0 -> user has left; accumulated_seconds holds their total
+# ---------------------------------------------------------------------
+_channel_members: dict[int, dict[int, tuple[int, int]]] = {}
+
+
+def _is_party_channel(channel: discord.abc.GuildChannel | None) -> bool:
+    """Return True if the channel is a PartyBeast-managed voice room."""
+    return channel is not None and channel.name.endswith(" vc")
+
+
+def _channel_member_join(channel_id: int, user_id: int, ts: int) -> None:
+    """Record a user joining a tracked channel."""
+    if channel_id not in _channel_members:
+        _channel_members[channel_id] = {}
+    _, accumulated = _channel_members[channel_id].get(user_id, (0, 0))
+    _channel_members[channel_id][user_id] = (ts, accumulated)
+
+
+def _channel_member_leave(channel_id: int, user_id: int, ts: int) -> None:
+    """Record a user leaving a tracked channel, accumulating elapsed time."""
+    data = _channel_members.get(channel_id)
+    if data is None:
+        return
+    entry = data.get(user_id)
+    if entry is None:
+        return
+    last_join_ts, accumulated = entry
+    if last_join_ts > 0:
+        accumulated += max(0, ts - last_join_ts)
+    data[user_id] = (0, accumulated)
+
+
+def _channel_leaderboard(channel_id: int, ts: int) -> list[tuple[int, int]]:
+    """
+    Return a list of (user_id, total_seconds) sorted by time descending.
+
+    Members still inside the channel at call time have their ongoing segment
+    included in the total.
+    """
+    data = _channel_members.get(channel_id, {})
+    result: list[tuple[int, int]] = []
+    for uid, (last_join_ts, accumulated) in data.items():
+        total = accumulated
+        if last_join_ts > 0:
+            total += max(0, ts - last_join_ts)
+        if total > 0:
+            result.append((uid, total))
+    return sorted(result, key=lambda x: x[1], reverse=True)
 
 
 async def reconcile_sessions_on_ready() -> None:
@@ -780,6 +853,10 @@ async def reconcile_sessions_on_ready() -> None:
                 if member.bot:
                     continue
                 active_now.add(member.id)
+
+                # Seed per-channel tracking for PartyBeast rooms.
+                if _is_party_channel(ch):
+                    _channel_member_join(ch.id, member.id, now_ts())
 
         await db.clear_sessions_not_in(guild.id, active_now)
 
@@ -850,6 +927,20 @@ async def on_voice_state_update(member: discord.Member,
 
     before_ch = before.channel
     after_ch = after.channel
+
+    # --- Per-channel membership tracking for PartyBeast rooms ---
+
+    # Leaving a party channel (either by disconnect or channel move).
+    if before_ch is not None and _is_party_channel(before_ch):
+        if after_ch is None or after_ch.id != before_ch.id:
+            _channel_member_leave(before_ch.id, user_id, ts)
+
+    # Joining a party channel (either fresh join or channel move).
+    if after_ch is not None and _is_party_channel(after_ch):
+        if before_ch is None or before_ch.id != after_ch.id:
+            _channel_member_join(after_ch.id, user_id, ts)
+
+    # --- Voice session tracking (existing logic) ---
 
     if before_ch is None and after_ch is not None:
         # Salva il membro come possibile creatore se entra nel canale trigger.
@@ -949,7 +1040,7 @@ async def resolve_partybeast_creator(channel: discord.VoiceChannel) -> discord.M
 
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
-    """Invia embed verde quando PartyBeast crea una vocale."""
+    """Invia embed quando PartyBeast crea una vocale."""
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
@@ -966,17 +1057,17 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     creator_value = creator.mention if creator is not None else channel.name[:-3].strip()
 
     now = datetime.now(TZ)
-    orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
+    orario = now.strftime("%d/%m/%Y  %H:%M:%S")
     _channel_created_at[channel.id] = now
 
     embed = discord.Embed(
-        title="🔊 Nuova stanza vocale creata",
+        title="Stanza vocale creata",
         color=discord.Color.green(),
         timestamp=now,
     )
-    embed.add_field(name="Nome stanza", value=channel.name, inline=True)
-    embed.add_field(name="Creato da", value=creator_value, inline=True)
-    embed.add_field(name="Orario", value=orario, inline=False)
+    embed.add_field(name="Stanza", value=f"`{channel.name}`", inline=True)
+    embed.add_field(name="Creata da", value=creator_value, inline=True)
+    embed.add_field(name="Orario di creazione", value=orario, inline=False)
 
     try:
         await log_channel.send(embed=embed)
@@ -986,7 +1077,7 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
-    """Invia embed rosso quando una vocale di PartyBeast viene eliminata."""
+    """Invia embed quando una vocale di PartyBeast viene eliminata."""
     if not isinstance(channel, discord.VoiceChannel):
         return
     if not channel.name.endswith(" vc"):
@@ -999,24 +1090,43 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
         except Exception:
             return
 
+    ts = now_ts()
     now = datetime.now(TZ)
-    orario = now.strftime("%d/%m/%Y alle %H:%M:%S")
+    orario_eliminazione = now.strftime("%d/%m/%Y  %H:%M:%S")
 
+    # --- Orario e durata ---
     created_at = _channel_created_at.pop(channel.id, None)
     if created_at is not None:
+        orario_creazione = created_at.strftime("%d/%m/%Y  %H:%M:%S")
         delta_seconds = int((now - created_at).total_seconds())
         durata = format_duration(delta_seconds)
     else:
+        orario_creazione = "Sconosciuto"
         durata = "Sconosciuta"
 
+    # --- Leaderboard partecipanti ---
+    ranking = _channel_leaderboard(channel.id, ts)
+    _channel_members.pop(channel.id, None)  # cleanup
+
+    if ranking:
+        lines: list[str] = []
+        for i, (uid, secs) in enumerate(ranking, start=1):
+            name = await resolve_member_name_in_guild(channel.guild, uid)
+            lines.append(f"{i}. {name} — {format_duration(secs)}")
+        leaderboard_value = "\n".join(lines)
+    else:
+        leaderboard_value = "Nessun dato disponibile."
+
     embed = discord.Embed(
-        title="🔇 Stanza vocale eliminata",
+        title="Stanza vocale eliminata",
         color=discord.Color.red(),
         timestamp=now,
     )
-    embed.add_field(name="Nome stanza", value=channel.name, inline=True)
+    embed.add_field(name="Stanza", value=f"`{channel.name}`", inline=True)
     embed.add_field(name="Durata", value=durata, inline=True)
-    embed.add_field(name="Orario eliminazione", value=orario, inline=False)
+    embed.add_field(name="Orario di creazione", value=orario_creazione, inline=False)
+    embed.add_field(name="Orario di eliminazione", value=orario_eliminazione, inline=False)
+    embed.add_field(name="Partecipanti", value=leaderboard_value, inline=False)
 
     try:
         await log_channel.send(embed=embed)
@@ -1032,7 +1142,6 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
                   description="Leaderboard totale: tempo passato in vocale.",
                   guild=GUILD)
 async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
-    # Diciamo a Discord di aspettare (evita l'errore 10062)
     await interaction.response.defer()
 
     if interaction.guild is None:
@@ -1064,18 +1173,19 @@ async def vocale_top(interaction: discord.Interaction, top: int = DEFAULT_TOP_N)
     lines: list[str] = []
     for i, (uid, t) in enumerate(ranking, start=1):
         name = await resolve_name(interaction, uid)
-        lines.append(f"{i:>2}. {name}  |  {format_duration(t.total)}")
+        lines.append(f"{i:>2}. {name}  —  {format_duration(t.total)}")
 
     embed = discord.Embed(
-        title="Leaderboard totale (vocale)",
-        description="\n".join(lines),
+        title="Leaderboard — Tempo totale in vocale",
+        description="```\n" + "\n".join(lines) + "\n```",
         color=discord.Color.blurple(),
     )
+    embed.set_footer(text=f"Top {top}  •  aggiornato in tempo reale")
     await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="stats",
-                  description="Statistiche utente (totale/mutato/defenato/screenshare).",
+                  description="Statistiche vocali di un utente (totale / attivo / mutato / defenato / screenshare).",
                   guild=GUILD)
 async def stats(interaction: discord.Interaction, user: discord.Member | None = None):
     await interaction.response.defer()
@@ -1111,7 +1221,7 @@ async def stats(interaction: discord.Interaction, user: discord.Member | None = 
 
 
 @bot.tree.command(name="vocale_giornaliera",
-                  description="Leaderboard giornaliera: tempo in vocale di oggi",
+                  description="Leaderboard giornaliera: tempo in vocale di oggi.",
                   guild=GUILD)
 async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAULT_TOP_N):
     await interaction.response.defer()
@@ -1134,21 +1244,21 @@ async def vocale_giornaliera(interaction: discord.Interaction, top: int = DEFAUL
                 base[uid] = base.get(uid, 0) + secs
 
     if not base:
-        await interaction.followup.send("Nessun dato per oggi (ancora).")
+        await interaction.followup.send("Nessun dato per oggi.")
         return
 
     ranking = sorted(base.items(), key=lambda kv: kv[1], reverse=True)[:top]
     lines: list[str] = []
     for i, (uid, sec) in enumerate(ranking, start=1):
         name = await resolve_name(interaction, uid)
-        lines.append(f"{i:>2}. {name}  |  {format_duration(sec)}")
+        lines.append(f"{i:>2}. {name}  —  {format_duration(sec)}")
 
     embed = discord.Embed(
-        title="Leaderboard giornaliera (oggi)",
-        description="\n".join(lines),
+        title="Leaderboard — Oggi",
+        description="```\n" + "\n".join(lines) + "\n```",
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"Data: {today_iso} (Europe/Rome).")
+    embed.set_footer(text=f"Data: {today_iso}  •  Europe/Rome  •  Top {top}")
     await interaction.followup.send(embed=embed)
 
 
@@ -1180,21 +1290,21 @@ async def vocale_settimanale(interaction: discord.Interaction, top: int = DEFAUL
                 base[uid] = base.get(uid, 0) + secs
 
     if not base:
-        await interaction.followup.send("Nessun dato per questa settimana (ancora).")
+        await interaction.followup.send("Nessun dato per questa settimana.")
         return
 
     ranking = sorted(base.items(), key=lambda kv: kv[1], reverse=True)[:top]
     lines: list[str] = []
     for i, (uid, sec) in enumerate(ranking, start=1):
         name = await resolve_name(interaction, uid)
-        lines.append(f"{i:>2}. {name}  |  {format_duration(sec)}")
+        lines.append(f"{i:>2}. {name}  —  {format_duration(sec)}")
 
     embed = discord.Embed(
-        title="Leaderboard settimanale (ultimi 7 giorni)",
-        description="\n".join(lines),
+        title="Leaderboard — Ultimi 7 giorni",
+        description="```\n" + "\n".join(lines) + "\n```",
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"Intervallo: {start_iso} → {end_iso} (Europe/Rome).")
+    embed.set_footer(text=f"{start_iso} → {end_iso}  •  Europe/Rome  •  Top {top}")
     await interaction.followup.send(embed=embed)
 
 
@@ -1223,7 +1333,7 @@ async def vocale_torta(interaction: discord.Interaction, user: discord.Member | 
     file = discord.File(fp=buf, filename="vocale_torta.png")
 
     embed = discord.Embed(
-        title=f"Ripartizione tempo in vocale: {user.display_name}",
+        title=f"Ripartizione tempo in vocale — {user.display_name}",
         color=discord.Color.blurple(),
     )
     embed.add_field(name="Attivo", value=format_duration(totals.active), inline=True)
@@ -1290,12 +1400,12 @@ async def vocale_linea(interaction: discord.Interaction,
         values_hours.append(secs / 3600.0)
         cur += timedelta(days=1)
 
-    buf = make_line_image(labels, values_hours, f"{title_mode} per giorno: {user.display_name} ({days} giorni)")
+    buf = make_line_image(labels, values_hours, f"{title_mode} per giorno — {user.display_name} ({days} giorni)")
     file = discord.File(fp=buf, filename="vocale_linea.png")
 
     embed = discord.Embed(
         title=f"Ore al giorno ({mode}) — {user.display_name}",
-        description=f"Intervallo: {start_day.isoformat()} → {end_day.isoformat()} (TZ Europe/Rome)",
+        description=f"Intervallo: {start_day.isoformat()} → {end_day.isoformat()}  •  Europe/Rome",
         color=discord.Color.blurple(),
     )
     embed.set_image(url="attachment://vocale_linea.png")
